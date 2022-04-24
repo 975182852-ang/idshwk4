@@ -1,36 +1,28 @@
 @load base/frameworks/sumstats
 
-event connection_established(c: connection)
-    {
-    # Make an observation!
-    # This observation is global so the key is empty.
-    # Each established connection counts as one so the observation is always 1.
-    SumStats::observe("conn established", 
-                      SumStats::Key(), 
-                      SumStats::Observation($num=1));
+event http_reply(c: connection, version: string, code: count, reason: string) {
+    SumStats::observe("response", SumStats::Key($host=c$id$orig_h), SumStats::Observation($num=1));
+    if (code == 404) {
+        SumStats::observe("response404", SumStats::Key($host=c$id$orig_h), SumStats::Observation($num=1));
+        SumStats::observe("responseUnique404", SumStats::Key($host=c$id$orig_h), SumStats::Observation($str=c$http$uri));
     }
+}
 
-event zeek_init()
-    {
-    # Create the reducer.
-    # The reducer attaches to the "conn established" observation stream
-    # and uses the summing calculation on the observations.
-    local r1 = SumStats::Reducer($stream="conn established", 
-                                 $apply=set(SumStats::SUM));
+event zeek_init() {
+    local rAll = SumStats::Reducer($stream="response", $apply=set(SumStats::SUM));
+    local r404 = SumStats::Reducer($stream="response404", $apply=set(SumStats::SUM));
+    local rUnique404 = SumStats::Reducer($stream="responseUnique404", $apply=set(SumStats::UNIQUE));
 
-    # Create the final sumstat.
-    # We give it an arbitrary name and make it collect data every minute.
-    # The reducer is then attached and a $epoch_result callback is given 
-    # to finally do something with the data collected.
-    SumStats::create([$name = "counting connections",
-                      $epoch = 1min,
-                      $reducers = set(r1),
-                      $epoch_result(ts: time, key: SumStats::Key, result: SumStats::Result) =
-                        {
-                        # This is the body of the callback that is called when a single 
-                        # result has been collected.  We are just printing the total number
-                        # of connections that were seen.  The $sum field is provided as a 
-                        # double type value so we need to use %f as the format specifier.
-                        print fmt("Number of connections established: %.0f", result["conn established"]$sum);
-                        }]);
-    }
+    SumStats::create([$name="idshwk4", $epoch=10min, $reducers=set(rAll, r404, rUnique404), $epoch_result(ts: time, key: SumStats::Key, result: SumStats::Result) = {
+        local r1 = result["response"];
+        local r2 = result["response404"];
+        local r3 = result["responseUnique404"];
+        if (r2$sum > 2) {
+            if (r2$sum / r1$sum > 0.2) {
+                if (r3$unique / r2$sum > 0.5) {
+                    print fmt(" %s is a scanner with %.0f scan attemps on %d urls", key$host, r2$sum, r3$unique);
+                } 
+            }
+        }
+    }]);
+}
